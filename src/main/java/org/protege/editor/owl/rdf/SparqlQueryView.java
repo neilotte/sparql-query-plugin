@@ -2,8 +2,6 @@ package org.protege.editor.owl.rdf;
 
 import org.protege.editor.core.ui.error.ErrorLogPanel;
 import org.protege.editor.owl.rdf.repository.BasicSparqlReasonerFactory;
-import org.protege.editor.owl.ui.renderer.OWLCellRenderer;
-import org.protege.editor.owl.ui.table.BasicOWLTable;
 import org.protege.editor.owl.ui.view.AbstractOWLViewComponent;
 
 import javax.swing.AbstractAction;
@@ -19,6 +17,7 @@ import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.JSplitPane;
+import javax.swing.JTable;
 import javax.swing.JTextPane;
 import javax.swing.KeyStroke;
 import javax.swing.ScrollPaneConstants;
@@ -77,9 +76,8 @@ public class SparqlQueryView extends AbstractOWLViewComponent {
 		try {
 			List<SparqlInferenceFactory> plugins = Collections.singletonList((SparqlInferenceFactory) new BasicSparqlReasonerFactory());
 			reasoner = plugins.iterator().next().createReasoner(getOWLModelManager().getOWLOntologyManager());
-			reasoner.precalculate();
 		}
-		catch (SparqlReasonerException e) {
+		catch (RuntimeException e) {
 			ErrorLogPanel.showErrorDialog(e);
 		}
 	}
@@ -108,16 +106,8 @@ public class SparqlQueryView extends AbstractOWLViewComponent {
 	private JComponent createCenterComponent() {
 		queryPane.setText(createSampleQuery());
 		JScrollPane queryScrollPane = new JScrollPane(queryPane, ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED, ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED);
-		BasicOWLTable results = new BasicOWLTable(resultModel) {
-			@Override
-			protected boolean isHeaderVisible() {
-				return true;
-			}
-		};
+		JTable results = new JTable(resultModel);
 		results.setAutoCreateRowSorter(true);
-		OWLCellRenderer renderer = new OWLCellRenderer(getOWLEditorKit());
-		renderer.setWrap(false);
-		results.setDefaultRenderer(Object.class, renderer);
 		JScrollPane resultsScrollPane = new JScrollPane(results);
 		JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, queryScrollPane, resultsScrollPane);
 		splitPane.setResizeWeight(0.45);
