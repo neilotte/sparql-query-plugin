@@ -1,6 +1,7 @@
 package org.protege.editor.owl.rdf;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 public class SparqlResultSet {
@@ -27,9 +28,17 @@ public class SparqlResultSet {
 	public String getColumnName(int col) {
 		return columnNames.get(col);
 	}
+
+	public List<String> getColumnNames() {
+		return Collections.unmodifiableList(columnNames);
+	}
 	
 	public Object getResult(int row, int col) {
 		return entries.get(row).get(col);
+	}
+
+	public List<List<Object>> getRows() {
+		return Collections.unmodifiableList(entries);
 	}
 	
 	
