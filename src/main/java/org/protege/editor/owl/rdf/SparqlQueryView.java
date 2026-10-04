@@ -273,6 +273,7 @@ public class SparqlQueryView extends AbstractOWLViewComponent {
 		queryWorker = new SwingWorker<SparqlResultSet, Void>() {
 			@Override
 			protected SparqlResultSet doInBackground() throws SparqlReasonerException {
+				reasoner.setTargetOntology(getOWLModelManager().getActiveOntology());
 				return reasoner.executeQuery(query);
 			}
 
