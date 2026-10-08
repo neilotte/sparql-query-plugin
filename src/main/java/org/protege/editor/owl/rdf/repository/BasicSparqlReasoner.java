@@ -3,6 +3,9 @@ package org.protege.editor.owl.rdf.repository;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Deque;
+import java.util.LinkedList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map.Entry;
@@ -31,11 +34,17 @@ import org.openrdf.sail.memory.MemoryStore;
 import org.protege.editor.owl.rdf.SparqlReasoner;
 import org.protege.editor.owl.rdf.SparqlReasonerException;
 import org.protege.editor.owl.rdf.SparqlResultSet;
+import org.protege.editor.owl.rdf.SparqlUpdatePreview;
 import org.semanticweb.owlapi.apibinding.OWLManager;
+import org.semanticweb.owlapi.formats.PrefixDocumentFormat;
 import org.semanticweb.owlapi.formats.RDFXMLDocumentFormat;
+import org.semanticweb.owlapi.formats.RioTurtleDocumentFormat;
+import org.semanticweb.owlapi.formats.TurtleDocumentFormat;
 import org.semanticweb.owlapi.model.AddAxiom;
 import org.semanticweb.owlapi.model.IRI;
 import org.semanticweb.owlapi.model.OWLAxiom;
+import org.semanticweb.owlapi.model.OWLDocumentFormat;
+import org.semanticweb.owlapi.model.OWLOntologyChange;
 import org.semanticweb.owlapi.model.OWLOntology;
 import org.semanticweb.owlapi.model.OWLOntologyManager;
 import org.semanticweb.owlapi.model.RemoveAxiom;
@@ -45,6 +54,7 @@ public class BasicSparqlReasoner implements SparqlReasoner {
 	private OWLOntologyManager manager;
 	private Repository repository;
 	private OWLOntology targetOntology;
+	private final Deque<List<OWLOntologyChange>> undoStack = new LinkedList<List<OWLOntologyChange>>();
 	
 	public BasicSparqlReasoner(OWLOntologyManager manager) {
 		this.manager = manager;
@@ -70,6 +80,55 @@ public class BasicSparqlReasoner implements SparqlReasoner {
 	@Override
 	public void setTargetOntology(OWLOntology ontology) {
 		targetOntology = ontology;
+	}
+	
+	@Override
+	public SparqlUpdatePreview previewUpdate(String queryString) throws SparqlReasonerException {
+		precalculate();
+		try {
+			RepositoryConnection sourceConnection = null;
+			Repository previewRepository = null;
+			RepositoryConnection previewConnection = null;
+			try {
+				sourceConnection = repository.getConnection();
+				Set<Statement> before = getStatements(sourceConnection);
+				previewRepository = createRepository(before);
+				previewConnection = previewRepository.getConnection();
+				Update update = previewConnection.prepareUpdate(QueryLanguage.SPARQL, queryString);
+				update.execute();
+				return createUpdatePreview(before, getStatements(previewConnection));
+			}
+			finally {
+				if (previewConnection != null) {
+					previewConnection.close();
+				}
+				if (previewRepository != null) {
+					previewRepository.shutDown();
+				}
+				if (sourceConnection != null) {
+					sourceConnection.close();
+				}
+			}
+		}
+		catch (Exception e) {
+			throw new SparqlReasonerException(e);
+		}
+	}
+	
+	@Override
+	public SparqlResultSet undoLastUpdate() throws SparqlReasonerException {
+		if (undoStack.isEmpty()) {
+			return createMessageResult("Undo", "There is no SPARQL update to undo.");
+		}
+		try {
+			List<OWLOntologyChange> inverseChanges = undoStack.pop();
+			manager.applyChanges(inverseChanges);
+			refreshRepository();
+			return createMessageResult("Undo", "Reverted " + inverseChanges.size() + " ontology changes from the last SPARQL update.");
+		}
+		catch (Exception e) {
+			throw new SparqlReasonerException(e);
+		}
 	}
 	
 	@Override
@@ -138,15 +197,67 @@ public class BasicSparqlReasoner implements SparqlReasoner {
 		Set<Statement> before = getStatements(connection);
 		update.execute();
 		Set<Statement> after = getStatements(connection);
+		AppliedUpdate updateSummary = applyUpdateDiff(before, after);
+		return createUpdateResult(updateSummary);
+	}
+	
+	private AppliedUpdate applyUpdateDiff(Set<Statement> before, Set<Statement> after) throws Exception {
 		Set<Statement> addedStatements = new HashSet<Statement>(after);
 		addedStatements.removeAll(before);
 		Set<Statement> removedStatements = new HashSet<Statement>(before);
 		removedStatements.removeAll(after);
-		Set<OWLAxiom> addedAxioms = parseAxioms(addedStatements);
-		Set<OWLAxiom> removedAxioms = parseAxioms(removedStatements);
-		int removedAxiomCount = removeAxioms(removedAxioms);
-		int addedAxiomCount = addAxioms(addedAxioms);
-		return createUpdateResult(addedStatements.size(), removedStatements.size(), addedAxiomCount, removedAxiomCount);
+		AxiomDiff axiomDiff = createAxiomDiff(addedStatements, removedStatements);
+		AppliedUpdate appliedUpdate = applyAxiomDiff(axiomDiff, addedStatements.size(), removedStatements.size());
+		return appliedUpdate;
+	}
+	
+	private SparqlUpdatePreview createUpdatePreview(Set<Statement> before, Set<Statement> after) throws Exception {
+		Set<Statement> addedStatements = new HashSet<Statement>(after);
+		addedStatements.removeAll(before);
+		Set<Statement> removedStatements = new HashSet<Statement>(before);
+		removedStatements.removeAll(after);
+		AxiomDiff axiomDiff = createAxiomDiff(addedStatements, removedStatements);
+		return new SparqlUpdatePreview(true, addedStatements.size(), removedStatements.size(), axiomDiff.getAddedAxioms().size(), axiomDiff.getRemovedAxioms().size(), axiomDiff.getFallbackTripleCount());
+	}
+	
+	private AxiomDiff createAxiomDiff(Set<Statement> addedStatements, Set<Statement> removedStatements) throws Exception {
+		StatementAxiomConverter converter = new StatementAxiomConverter(manager);
+		StatementAxiomConverter.StatementConversion addedConversion = converter.convert(addedStatements);
+		StatementAxiomConverter.StatementConversion removedConversion = converter.convert(removedStatements);
+		Set<OWLAxiom> addedAxioms = new HashSet<OWLAxiom>(addedConversion.getAxioms());
+		Set<OWLAxiom> removedAxioms = new HashSet<OWLAxiom>(removedConversion.getAxioms());
+		addedAxioms.addAll(parseAxioms(addedConversion.getFallbackStatements()));
+		removedAxioms.addAll(parseAxioms(removedConversion.getFallbackStatements()));
+		return new AxiomDiff(addedAxioms, removedAxioms, addedConversion.getFallbackStatements().size() + removedConversion.getFallbackStatements().size());
+	}
+	
+	private AppliedUpdate applyAxiomDiff(AxiomDiff axiomDiff, int addedTriples, int removedTriples) {
+		OWLOntology addTarget = getTargetOntology();
+		List<OWLOntologyChange> changes = new ArrayList<OWLOntologyChange>();
+		List<OWLOntologyChange> inverseChanges = new ArrayList<OWLOntologyChange>();
+		Set<OWLOntology> changedOntologies = new HashSet<OWLOntology>();
+		for (OWLAxiom axiom : axiomDiff.getRemovedAxioms()) {
+			for (OWLOntology ontology : manager.getOntologies(axiom)) {
+				changes.add(new RemoveAxiom(ontology, axiom));
+				inverseChanges.add(0, new AddAxiom(ontology, axiom));
+				changedOntologies.add(ontology);
+			}
+		}
+		for (OWLAxiom axiom : axiomDiff.getAddedAxioms()) {
+			if (!addTarget.containsAxiom(axiom)) {
+				changes.add(new AddAxiom(addTarget, axiom));
+				inverseChanges.add(0, new RemoveAxiom(addTarget, axiom));
+				changedOntologies.add(addTarget);
+			}
+		}
+		if (!changes.isEmpty()) {
+			manager.applyChanges(changes);
+			undoStack.push(inverseChanges);
+			for (OWLOntology ontology : changedOntologies) {
+				preferPlainTurtleFormat(ontology);
+			}
+		}
+		return new AppliedUpdate(addedTriples, removedTriples, axiomDiff.getAddedAxioms().size(), axiomDiff.getRemovedAxioms().size(), axiomDiff.getFallbackTripleCount(), changes.size());
 	}
 	
 	private Set<Statement> getStatements(RepositoryConnection connection) throws RepositoryException {
@@ -160,6 +271,22 @@ public class BasicSparqlReasoner implements SparqlReasoner {
 				result.close();
 			}
 		}
+	}
+	
+	private Repository createRepository(Set<Statement> statements) throws RepositoryException {
+		Repository newRepository = new SailRepository(new MemoryStore());
+		newRepository.initialize();
+		RepositoryConnection connection = null;
+		try {
+			connection = newRepository.getConnection();
+			connection.add(statements);
+		}
+		finally {
+			if (connection != null) {
+				connection.close();
+			}
+		}
+		return newRepository;
 	}
 	
 	private Set<OWLAxiom> parseAxioms(Set<Statement> statements) throws Exception {
@@ -214,20 +341,44 @@ public class BasicSparqlReasoner implements SparqlReasoner {
 		return manager.getOntologies().iterator().next();
 	}
 	
-	private SparqlResultSet createUpdateResult(int addedTriples, int removedTriples, int addedAxioms, int removedAxioms) {
+	private void preferPlainTurtleFormat(OWLOntology ontology) {
+		OWLDocumentFormat format = manager.getOntologyFormat(ontology);
+		if (format instanceof TurtleDocumentFormat) {
+			RioTurtleDocumentFormat rioFormat = new RioTurtleDocumentFormat();
+			if (format.isPrefixOWLOntologyFormat()) {
+				PrefixDocumentFormat prefixFormat = format.asPrefixOWLOntologyFormat();
+				rioFormat.copyPrefixesFrom(prefixFormat);
+			}
+			manager.setOntologyFormat(ontology, rioFormat);
+		}
+	}
+	
+	private SparqlResultSet createUpdateResult(AppliedUpdate update) {
 		List<String> columnNames = new ArrayList<String>();
 		columnNames.add("Operation");
 		columnNames.add("Added triples");
 		columnNames.add("Removed triples");
 		columnNames.add("Added axioms");
 		columnNames.add("Removed axioms");
+		columnNames.add("Fallback triples");
+		columnNames.add("Applied changes");
 		SparqlResultSet result = new SparqlResultSet(columnNames);
 		List<Object> row = new ArrayList<Object>();
 		row.add("SPARQL Update");
-		row.add(addedTriples);
-		row.add(removedTriples);
-		row.add(addedAxioms);
-		row.add(removedAxioms);
+		row.add(update.getAddedTriples());
+		row.add(update.getRemovedTriples());
+		row.add(update.getAddedAxioms());
+		row.add(update.getRemovedAxioms());
+		row.add(update.getFallbackTriples());
+		row.add(update.getAppliedChanges());
+		result.addRow(row);
+		return result;
+	}
+	
+	private SparqlResultSet createMessageResult(String operation, String message) {
+		SparqlResultSet result = new SparqlResultSet(Collections.singletonList("Message"));
+		List<Object> row = new ArrayList<Object>();
+		row.add(operation + ": " + message);
 		result.addRow(row);
 		return result;
 	}
@@ -281,6 +432,14 @@ public class BasicSparqlReasoner implements SparqlReasoner {
 		return "";
 	}
 	
+	private void refreshRepository() throws Exception {
+		if (repository != null) {
+			repository.shutDown();
+			repository = null;
+		}
+		precalculate();
+	}
+	
 	private SparqlResultSet handleTupleQuery(TupleQuery tupleQuery) throws QueryEvaluationException, TupleQueryResultHandlerException {
 		TupleQueryHandler handler = new TupleQueryHandler();
 		tupleQuery.evaluate(handler);
@@ -313,6 +472,72 @@ public class BasicSparqlReasoner implements SparqlReasoner {
 				// Ignore shutdown errors; the query view is already closing.
 			}
 			repository = null;
+		}
+	}
+	
+	private static class AxiomDiff {
+		private final Set<OWLAxiom> addedAxioms;
+		private final Set<OWLAxiom> removedAxioms;
+		private final int fallbackTripleCount;
+		
+		AxiomDiff(Set<OWLAxiom> addedAxioms, Set<OWLAxiom> removedAxioms, int fallbackTripleCount) {
+			this.addedAxioms = addedAxioms;
+			this.removedAxioms = removedAxioms;
+			this.fallbackTripleCount = fallbackTripleCount;
+		}
+		
+		Set<OWLAxiom> getAddedAxioms() {
+			return addedAxioms;
+		}
+		
+		Set<OWLAxiom> getRemovedAxioms() {
+			return removedAxioms;
+		}
+		
+		int getFallbackTripleCount() {
+			return fallbackTripleCount;
+		}
+	}
+	
+	private static class AppliedUpdate {
+		private final int addedTriples;
+		private final int removedTriples;
+		private final int addedAxioms;
+		private final int removedAxioms;
+		private final int fallbackTriples;
+		private final int appliedChanges;
+		
+		AppliedUpdate(int addedTriples, int removedTriples, int addedAxioms, int removedAxioms, int fallbackTriples, int appliedChanges) {
+			this.addedTriples = addedTriples;
+			this.removedTriples = removedTriples;
+			this.addedAxioms = addedAxioms;
+			this.removedAxioms = removedAxioms;
+			this.fallbackTriples = fallbackTriples;
+			this.appliedChanges = appliedChanges;
+		}
+		
+		int getAddedTriples() {
+			return addedTriples;
+		}
+		
+		int getRemovedTriples() {
+			return removedTriples;
+		}
+		
+		int getAddedAxioms() {
+			return addedAxioms;
+		}
+		
+		int getRemovedAxioms() {
+			return removedAxioms;
+		}
+		
+		int getFallbackTriples() {
+			return fallbackTriples;
+		}
+		
+		int getAppliedChanges() {
+			return appliedChanges;
 		}
 	}
 

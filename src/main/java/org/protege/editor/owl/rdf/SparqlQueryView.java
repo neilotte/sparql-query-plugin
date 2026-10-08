@@ -8,11 +8,13 @@ import javax.swing.AbstractAction;
 import javax.swing.Action;
 import javax.swing.BorderFactory;
 import javax.swing.DefaultComboBoxModel;
+import javax.swing.DefaultListCellRenderer;
 import javax.swing.JButton;
 import javax.swing.JComboBox;
 import javax.swing.JComponent;
 import javax.swing.JFileChooser;
 import javax.swing.JLabel;
+import javax.swing.JList;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
@@ -25,6 +27,7 @@ import javax.swing.SwingWorker;
 import javax.swing.Timer;
 import javax.swing.filechooser.FileNameExtensionFilter;
 import java.awt.BorderLayout;
+import java.awt.Component;
 import java.awt.FlowLayout;
 import java.awt.event.ActionEvent;
 import java.awt.event.InputEvent;
@@ -33,24 +36,37 @@ import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Date;
 import java.util.List;
 import java.util.prefs.Preferences;
+
+import org.semanticweb.owlapi.model.IRI;
+import org.semanticweb.owlapi.model.OWLOntology;
 
 public class SparqlQueryView extends AbstractOWLViewComponent {
 	private static final String RUN_ACTION_KEY = "run-sparql-query";
 
 	private SparqlReasoner reasoner;
 	private SavedSparqlQueryStore queryStore;
+	private SavedSparqlQueryStore recentQueryStore;
 	private final JTextPane queryPane = new JTextPane();
 	private final SwingResultModel resultModel = new SwingResultModel();
 	private final SparqlResultExporter resultExporter = new SparqlResultExporter();
 	private final DefaultComboBoxModel<SavedSparqlQuery> savedQueryModel = new DefaultComboBoxModel<SavedSparqlQuery>();
 	private final JComboBox<SavedSparqlQuery> savedQueryCombo = new JComboBox<SavedSparqlQuery>(savedQueryModel);
+	private final DefaultComboBoxModel<SavedSparqlQuery> recentQueryModel = new DefaultComboBoxModel<SavedSparqlQuery>();
+	private final JComboBox<SavedSparqlQuery> recentQueryCombo = new JComboBox<SavedSparqlQuery>(recentQueryModel);
+	private final DefaultComboBoxModel<QueryTemplate> templateModel = new DefaultComboBoxModel<QueryTemplate>();
+	private final JComboBox<QueryTemplate> templateCombo = new JComboBox<QueryTemplate>(templateModel);
+	private final DefaultComboBoxModel<OWLOntology> targetOntologyModel = new DefaultComboBoxModel<OWLOntology>();
+	private final JComboBox<OWLOntology> targetOntologyCombo = new JComboBox<OWLOntology>(targetOntologyModel);
 	private final JLabel statusLabel = new JLabel("Ready");
 	private final JButton runButton = new JButton("Run");
 	private final JButton cancelButton = new JButton("Cancel");
 	private final JButton exportButton = new JButton("Export...");
+	private final JButton undoButton = new JButton("Undo Update");
 	private final List<SavedSparqlQuery> savedQueries = new ArrayList<SavedSparqlQuery>();
+	private final List<SavedSparqlQuery> recentQueries = new ArrayList<SavedSparqlQuery>();
 
 	private SwingWorker<SparqlResultSet, Void> queryWorker;
 	private Timer elapsedTimer;
@@ -61,12 +77,16 @@ public class SparqlQueryView extends AbstractOWLViewComponent {
 	@Override
 	protected void initialiseOWLView() {
 		queryStore = new SavedSparqlQueryStore(Preferences.userNodeForPackage(SparqlQueryView.class).node("savedQueries"));
+		recentQueryStore = new SavedSparqlQueryStore(Preferences.userNodeForPackage(SparqlQueryView.class).node("recentQueries"));
 		initializeReasoner();
 		setLayout(new BorderLayout());
 		add(createToolbar(), BorderLayout.NORTH);
 		add(createCenterComponent(), BorderLayout.CENTER);
 		add(createStatusComponent(), BorderLayout.SOUTH);
 		loadSavedQueries();
+		loadRecentQueries();
+		loadTargetOntologies();
+		loadTemplates();
 		setInitialQuery();
 		registerRunShortcut();
 		updateButtonState();
@@ -87,18 +107,31 @@ public class SparqlQueryView extends AbstractOWLViewComponent {
 		panel.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
 		savedQueryCombo.setPrototypeDisplayValue(new SavedSparqlQuery("Saved queries", ""));
 		savedQueryCombo.addActionListener(e -> loadSelectedSavedQuery());
+		recentQueryCombo.setPrototypeDisplayValue(new SavedSparqlQuery("Recent queries", ""));
+		recentQueryCombo.addActionListener(e -> loadSelectedRecentQuery());
+		templateCombo.addActionListener(e -> insertSelectedTemplate());
+		targetOntologyCombo.setRenderer(new OntologyRenderer());
 		panel.add(new JLabel("Query:"));
 		panel.add(savedQueryCombo);
 		panel.add(new JButton(newQueryAction()));
 		panel.add(new JButton(saveQueryAction()));
 		panel.add(new JButton(deleteQueryAction()));
 		panel.add(new JButton(insertPrefixesAction()));
+		panel.add(new JButton(addLimitAction()));
+		panel.add(new JLabel("Template:"));
+		panel.add(templateCombo);
+		panel.add(new JLabel("Recent:"));
+		panel.add(recentQueryCombo);
+		panel.add(new JLabel("Update target:"));
+		panel.add(targetOntologyCombo);
 		runButton.addActionListener(e -> runQuery());
 		cancelButton.addActionListener(e -> cancelQuery());
+		undoButton.addActionListener(e -> undoLastUpdate());
 		cancelButton.setEnabled(false);
 		exportButton.addActionListener(e -> exportResults());
 		panel.add(runButton);
 		panel.add(cancelButton);
+		panel.add(undoButton);
 		panel.add(exportButton);
 		return panel;
 	}
@@ -158,11 +191,51 @@ public class SparqlQueryView extends AbstractOWLViewComponent {
 			}
 		};
 	}
+	
+	private Action addLimitAction() {
+		return new AbstractAction("LIMIT 100") {
+			@Override
+			public void actionPerformed(ActionEvent e) {
+				addLimit();
+			}
+		};
+	}
 
 	private void loadSavedQueries() {
 		savedQueries.clear();
 		savedQueries.addAll(queryStore.loadQueries());
 		refreshSavedQueryModel();
+	}
+	
+	private void loadRecentQueries() {
+		recentQueries.clear();
+		recentQueries.addAll(recentQueryStore.loadQueries());
+		refreshRecentQueryModel();
+	}
+	
+	private void loadTargetOntologies() {
+		targetOntologyModel.removeAllElements();
+		for (OWLOntology ontology : getOWLModelManager().getOWLOntologyManager().getOntologies()) {
+			targetOntologyModel.addElement(ontology);
+		}
+		OWLOntology activeOntology = getOWLModelManager().getActiveOntology();
+		if (activeOntology != null) {
+			targetOntologyCombo.setSelectedItem(activeOntology);
+		}
+	}
+	
+	private void loadTemplates() {
+		templateModel.removeAllElements();
+		templateModel.addElement(new QueryTemplate("Choose template...", null));
+		templateModel.addElement(new QueryTemplate("Classes with labels", "SELECT ?class ?label\nWHERE {\n  ?class a owl:Class .\n  OPTIONAL { ?class rdfs:label ?label }\n}\nORDER BY ?class\nLIMIT 100"));
+		templateModel.addElement(new QueryTemplate("Subclass tree", "SELECT ?child ?parent\nWHERE {\n  ?child rdfs:subClassOf ?parent\n}\nORDER BY ?parent ?child\nLIMIT 100"));
+		templateModel.addElement(new QueryTemplate("Object properties", "SELECT ?property ?domain ?range\nWHERE {\n  ?property a owl:ObjectProperty .\n  OPTIONAL { ?property rdfs:domain ?domain }\n  OPTIONAL { ?property rdfs:range ?range }\n}\nORDER BY ?property\nLIMIT 100"));
+		templateModel.addElement(new QueryTemplate("Annotation assertions", "SELECT ?subject ?property ?value\nWHERE {\n  ?subject ?property ?value .\n  ?property a owl:AnnotationProperty\n}\nLIMIT 100"));
+		templateModel.addElement(new QueryTemplate("Individuals by class", "SELECT ?individual ?class\nWHERE {\n  ?individual a ?class .\n  ?class a owl:Class\n}\nORDER BY ?class ?individual\nLIMIT 100"));
+		templateModel.addElement(new QueryTemplate("CONSTRUCT labels", "CONSTRUCT {\n  ?entity rdfs:label ?label\n}\nWHERE {\n  ?entity rdfs:label ?label\n}\nLIMIT 100"));
+		templateModel.addElement(new QueryTemplate("INSERT subclass", "INSERT DATA {\n  <http://example.com/NewClass> a owl:Class ;\n    rdfs:subClassOf <http://example.com/ParentClass> ;\n    rdfs:label \"New class\" .\n}"));
+		templateModel.addElement(new QueryTemplate("DELETE triple", "DELETE DATA {\n  <http://example.com/NewClass> rdfs:label \"New class\" .\n}"));
+		templateCombo.setSelectedIndex(0);
 	}
 
 	private void refreshSavedQueryModel() {
@@ -177,6 +250,14 @@ public class SparqlQueryView extends AbstractOWLViewComponent {
 		finally {
 			loadingSavedQuery = false;
 		}
+	}
+	
+	private void refreshRecentQueryModel() {
+		recentQueryModel.removeAllElements();
+		for (SavedSparqlQuery query : recentQueries) {
+			recentQueryModel.addElement(query);
+		}
+		recentQueryCombo.setSelectedIndex(-1);
 	}
 
 	private void setInitialQuery() {
@@ -196,6 +277,24 @@ public class SparqlQueryView extends AbstractOWLViewComponent {
 		if (query != null) {
 			queryPane.setText(query.getQuery());
 			statusLabel.setText("Loaded \"" + query.getName() + "\"");
+		}
+	}
+	
+	private void loadSelectedRecentQuery() {
+		SavedSparqlQuery query = (SavedSparqlQuery) recentQueryCombo.getSelectedItem();
+		if (query != null) {
+			queryPane.setText(query.getQuery());
+			statusLabel.setText("Loaded recent query");
+		}
+	}
+	
+	private void insertSelectedTemplate() {
+		QueryTemplate template = (QueryTemplate) templateCombo.getSelectedItem();
+		if (template != null && template.getQuery() != null) {
+			queryPane.setText(PrefixDeclarations.create(getOWLModelManager()) + "\n" + template.getQuery());
+			queryPane.setCaretPosition(0);
+			statusLabel.setText("Inserted \"" + template.getName() + "\" template");
+			templateCombo.setSelectedIndex(0);
 		}
 	}
 
@@ -260,20 +359,35 @@ public class SparqlQueryView extends AbstractOWLViewComponent {
 		queryPane.setCaretPosition(0);
 		statusLabel.setText("Prefixes refreshed from loaded ontologies");
 	}
+	
+	private void addLimit() {
+		String query = queryPane.getText();
+		if (!query.matches("(?is).*\\bSELECT\\b.*") || query.matches("(?is).*\\bLIMIT\\s+\\d+\\b.*")) {
+			statusLabel.setText("LIMIT helper applies to SELECT queries without an existing LIMIT");
+			return;
+		}
+		queryPane.setText(query.trim() + "\nLIMIT 100");
+		statusLabel.setText("Added LIMIT 100");
+	}
 
 	private void runQuery() {
 		if (reasoner == null || queryWorker != null) {
+			return;
+		}
+		final String query = queryPane.getText();
+		final OWLOntology targetOntology = getSelectedTargetOntology();
+		reasoner.setTargetOntology(targetOntology);
+		if (looksLikeUpdate(query) && !confirmUpdate(query)) {
 			return;
 		}
 		queryStartedAt = System.currentTimeMillis();
 		statusLabel.setText("Running query...");
 		updateRunningState(true);
 		startElapsedTimer();
-		final String query = queryPane.getText();
 		queryWorker = new SwingWorker<SparqlResultSet, Void>() {
 			@Override
 			protected SparqlResultSet doInBackground() throws SparqlReasonerException {
-				reasoner.setTargetOntology(getOWLModelManager().getActiveOntology());
+				reasoner.setTargetOntology(targetOntology);
 				return reasoner.executeQuery(query);
 			}
 
@@ -284,6 +398,7 @@ public class SparqlQueryView extends AbstractOWLViewComponent {
 					if (!isCancelled()) {
 						currentResult = get();
 						resultModel.setResults(currentResult);
+						recordRecentQuery(query);
 						long elapsed = System.currentTimeMillis() - queryStartedAt;
 						statusLabel.setText("Done: " + currentResult.getRowCount() + " rows in " + elapsed + " ms");
 					}
@@ -293,6 +408,91 @@ public class SparqlQueryView extends AbstractOWLViewComponent {
 					ErrorLogPanel.showErrorDialog(cause);
 					JOptionPane.showMessageDialog(getOWLWorkspace(), cause.getMessage() + "\nSee the logs for more information.");
 					statusLabel.setText("Query failed");
+				}
+				finally {
+					queryWorker = null;
+					updateRunningState(false);
+				}
+			}
+		};
+		queryWorker.execute();
+	}
+	
+	private boolean confirmUpdate(String query) {
+		try {
+			statusLabel.setText("Previewing SPARQL update...");
+			SparqlUpdatePreview preview = reasoner.previewUpdate(query);
+			if (!preview.isUpdate()) {
+				return true;
+			}
+			String message = "This SPARQL Update will add " + preview.getAddedTriples() + " triples and remove " + preview.getRemovedTriples() + " triples.\n"
+					+ "OWL changes: +" + preview.getAddedAxioms() + " axioms, -" + preview.getRemovedAxioms() + " axioms.\n"
+					+ "Fallback triples: " + preview.getFallbackTriples() + ". These require OWLAPI RDF parsing.\n\n"
+					+ "Apply these changes to the selected ontology?";
+			return JOptionPane.showConfirmDialog(getOWLWorkspace(), message, "Apply SPARQL Update", JOptionPane.OK_CANCEL_OPTION) == JOptionPane.OK_OPTION;
+		}
+		catch (SparqlReasonerException ex) {
+			ErrorLogPanel.showErrorDialog(ex);
+			JOptionPane.showMessageDialog(getOWLWorkspace(), ex.getMessage() + "\nSee the logs for more information.");
+			statusLabel.setText("Update preview failed");
+			return false;
+		}
+	}
+	
+	private boolean looksLikeUpdate(String query) {
+		return query.matches("(?is).*\\b(INSERT|DELETE|LOAD|CLEAR|CREATE|DROP|COPY|MOVE|ADD)\\b.*");
+	}
+	
+	private OWLOntology getSelectedTargetOntology() {
+		OWLOntology selectedOntology = (OWLOntology) targetOntologyCombo.getSelectedItem();
+		return selectedOntology == null ? getOWLModelManager().getActiveOntology() : selectedOntology;
+	}
+	
+	private void recordRecentQuery(String query) {
+		String trimmedQuery = query.trim();
+		if (trimmedQuery.length() == 0) {
+			return;
+		}
+		for (int i = recentQueries.size() - 1; i >= 0; i--) {
+			if (recentQueries.get(i).getQuery().trim().equals(trimmedQuery)) {
+				recentQueries.remove(i);
+			}
+		}
+		String name = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date());
+		recentQueries.add(0, new SavedSparqlQuery(name, trimmedQuery));
+		while (recentQueries.size() > 15) {
+			recentQueries.remove(recentQueries.size() - 1);
+		}
+		recentQueryStore.saveQueries(recentQueries);
+		refreshRecentQueryModel();
+	}
+	
+	private void undoLastUpdate() {
+		if (reasoner == null || queryWorker != null) {
+			return;
+		}
+		updateRunningState(true);
+		statusLabel.setText("Undoing last SPARQL update...");
+		queryWorker = new SwingWorker<SparqlResultSet, Void>() {
+			@Override
+			protected SparqlResultSet doInBackground() throws SparqlReasonerException {
+				return reasoner.undoLastUpdate();
+			}
+			
+			@Override
+			protected void done() {
+				try {
+					if (!isCancelled()) {
+						currentResult = get();
+						resultModel.setResults(currentResult);
+						statusLabel.setText("Undo complete");
+					}
+				}
+				catch (Exception ex) {
+					Throwable cause = ex.getCause() == null ? ex : ex.getCause();
+					ErrorLogPanel.showErrorDialog(cause);
+					JOptionPane.showMessageDialog(getOWLWorkspace(), cause.getMessage() + "\nSee the logs for more information.");
+					statusLabel.setText("Undo failed");
 				}
 				finally {
 					queryWorker = null;
@@ -353,6 +553,7 @@ public class SparqlQueryView extends AbstractOWLViewComponent {
 
 	private void updateButtonState() {
 		exportButton.setEnabled(currentResult.getColumnCount() > 0 && queryWorker == null);
+		undoButton.setEnabled(reasoner != null && queryWorker == null);
 	}
 
 	private void startElapsedTimer() {
@@ -395,6 +596,49 @@ public class SparqlQueryView extends AbstractOWLViewComponent {
 		if (reasoner != null) {
 			reasoner.dispose();
 			reasoner = null;
+		}
+	}
+	
+	private static class QueryTemplate {
+		private final String name;
+		private final String query;
+		
+		QueryTemplate(String name, String query) {
+			this.name = name;
+			this.query = query;
+		}
+		
+		String getName() {
+			return name;
+		}
+		
+		String getQuery() {
+			return query;
+		}
+		
+		@Override
+		public String toString() {
+			return name;
+		}
+	}
+	
+	private static class OntologyRenderer extends DefaultListCellRenderer {
+		private static final long serialVersionUID = 1L;
+		
+		@Override
+		public Component getListCellRendererComponent(JList<?> list, Object value, int index, boolean isSelected, boolean cellHasFocus) {
+			super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
+			if (value instanceof OWLOntology) {
+				OWLOntology ontology = (OWLOntology) value;
+				if (ontology.getOntologyID().getOntologyIRI().isPresent()) {
+					IRI iri = ontology.getOntologyID().getOntologyIRI().get();
+					setText(iri.getShortForm());
+				}
+				else {
+					setText("Anonymous ontology");
+				}
+			}
+			return this;
 		}
 	}
 }

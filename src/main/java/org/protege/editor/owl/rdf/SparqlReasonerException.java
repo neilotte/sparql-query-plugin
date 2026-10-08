@@ -11,6 +11,10 @@ public class SparqlReasonerException extends Exception {
 		super(t);
 	}
 	
+	public SparqlReasonerException(String message) {
+		super(message);
+	}
+	
 	public SparqlReasonerException(String message, Throwable t) {
 		super(message, t);
 	}
