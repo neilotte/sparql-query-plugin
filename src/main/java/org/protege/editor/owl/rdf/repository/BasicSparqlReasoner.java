@@ -60,6 +60,9 @@ public class BasicSparqlReasoner implements SparqlReasoner {
 	private static final String RDFS_RANGE = "http://www.w3.org/2000/01/rdf-schema#range";
 	private static final String OWL_EQUIVALENT_CLASS = "http://www.w3.org/2002/07/owl#equivalentClass";
 	private static final String OWL_DISJOINT_WITH = "http://www.w3.org/2002/07/owl#disjointWith";
+	private static final String OWL_OBJECT_PROPERTY = "http://www.w3.org/2002/07/owl#ObjectProperty";
+	private static final String OWL_ANNOTATION_PROPERTY = "http://www.w3.org/2002/07/owl#AnnotationProperty";
+	private static final String OWL_NAMED_INDIVIDUAL = "http://www.w3.org/2002/07/owl#NamedIndividual";
 	
 	private OWLOntologyManager manager;
 	private Repository repository;
@@ -222,23 +225,47 @@ public class BasicSparqlReasoner implements SparqlReasoner {
 		addedStatements.removeAll(before);
 		Set<Statement> removedStatements = new HashSet<Statement>(before);
 		removedStatements.removeAll(after);
-		lastUpdateCleanupPlan = createCleanupPlan(addedStatements);
+		lastUpdateCleanupPlan = createCleanupPlan(before, addedStatements);
 		AxiomDiff axiomDiff = createAxiomDiff(addedStatements, removedStatements);
 		AppliedUpdate appliedUpdate = applyAxiomDiff(axiomDiff, addedStatements.size(), removedStatements.size());
 		return appliedUpdate;
 	}
 	
-	private SparqlUpdateCleanupPlan createCleanupPlan(Set<Statement> addedStatements) {
+	private SparqlUpdateCleanupPlan createCleanupPlan(Set<Statement> beforeStatements, Set<Statement> addedStatements) {
 		SparqlUpdateCleanupPlan cleanupPlan = new SparqlUpdateCleanupPlan();
 		for (Statement statement : addedStatements) {
 			if (isGenericUriTriple(statement)) {
-				cleanupPlan.addNamedIndividualIRI(statement.getSubject().stringValue());
-				cleanupPlan.addObjectPropertyIRI(statement.getPredicate().stringValue());
-				cleanupPlan.addAnnotationPropertyIRI(statement.getPredicate().stringValue());
-				cleanupPlan.addNamedIndividualIRI(statement.getObject().stringValue());
+				String subject = statement.getSubject().stringValue();
+				String predicate = statement.getPredicate().stringValue();
+				String object = statement.getObject().stringValue();
+				if (!containsType(beforeStatements, subject, OWL_NAMED_INDIVIDUAL)) {
+					cleanupPlan.addNamedIndividualIRI(subject);
+				}
+				if (!containsType(beforeStatements, predicate, OWL_OBJECT_PROPERTY)) {
+					cleanupPlan.addObjectPropertyIRI(predicate);
+				}
+				if (!containsType(beforeStatements, predicate, OWL_ANNOTATION_PROPERTY)) {
+					cleanupPlan.addAnnotationPropertyIRI(predicate);
+				}
+				if (!containsType(beforeStatements, object, OWL_NAMED_INDIVIDUAL)) {
+					cleanupPlan.addNamedIndividualIRI(object);
+				}
 			}
 		}
 		return cleanupPlan;
+	}
+	
+	private boolean containsType(Set<Statement> statements, String subject, String object) {
+		for (Statement statement : statements) {
+			if (statement.getSubject() instanceof URI
+					&& statement.getObject() instanceof URI
+					&& RDF_TYPE.equals(statement.getPredicate().stringValue())
+					&& subject.equals(statement.getSubject().stringValue())
+					&& object.equals(statement.getObject().stringValue())) {
+				return true;
+			}
+		}
+		return false;
 	}
 	
 	private boolean isGenericUriTriple(Statement statement) {
@@ -295,12 +322,38 @@ public class BasicSparqlReasoner implements SparqlReasoner {
 		}
 		if (!changes.isEmpty()) {
 			manager.applyChanges(changes);
+			List<OWLOntologyChange> cleanupChanges = cleanupGeneratedDeclarations(lastUpdateCleanupPlan);
+			if (!cleanupChanges.isEmpty()) {
+				manager.applyChanges(cleanupChanges);
+				changes.addAll(cleanupChanges);
+			}
 			undoStack.push(inverseChanges);
 			for (OWLOntology ontology : changedOntologies) {
 				preferPlainTurtleFormat(ontology);
 			}
 		}
 		return new AppliedUpdate(addedTriples, removedTriples, axiomDiff.getAddedAxioms().size(), axiomDiff.getRemovedAxioms().size(), axiomDiff.getFallbackTripleCount(), changes.size());
+	}
+	
+	private List<OWLOntologyChange> cleanupGeneratedDeclarations(SparqlUpdateCleanupPlan cleanupPlan) {
+		List<OWLOntologyChange> changes = new ArrayList<OWLOntologyChange>();
+		for (String iri : cleanupPlan.getObjectPropertyIRIs()) {
+			addRemoveDeclarationChanges(changes, manager.getOWLDataFactory().getOWLObjectProperty(IRI.create(iri)));
+		}
+		for (String iri : cleanupPlan.getAnnotationPropertyIRIs()) {
+			addRemoveDeclarationChanges(changes, manager.getOWLDataFactory().getOWLAnnotationProperty(IRI.create(iri)));
+		}
+		for (String iri : cleanupPlan.getNamedIndividualIRIs()) {
+			addRemoveDeclarationChanges(changes, manager.getOWLDataFactory().getOWLNamedIndividual(IRI.create(iri)));
+		}
+		return changes;
+	}
+	
+	private void addRemoveDeclarationChanges(List<OWLOntologyChange> changes, org.semanticweb.owlapi.model.OWLEntity entity) {
+		OWLAxiom declaration = manager.getOWLDataFactory().getOWLDeclarationAxiom(entity);
+		for (OWLOntology ontology : manager.getOntologies(declaration)) {
+			changes.add(new RemoveAxiom(ontology, declaration));
+		}
 	}
 	
 	private Set<Statement> getStatements(RepositoryConnection connection) throws RepositoryException {
