@@ -234,6 +234,7 @@ public class BasicSparqlReasoner implements SparqlReasoner {
 			if (isGenericUriTriple(statement)) {
 				cleanupPlan.addNamedIndividualIRI(statement.getSubject().stringValue());
 				cleanupPlan.addObjectPropertyIRI(statement.getPredicate().stringValue());
+				cleanupPlan.addAnnotationPropertyIRI(statement.getPredicate().stringValue());
 				cleanupPlan.addNamedIndividualIRI(statement.getObject().stringValue());
 			}
 		}

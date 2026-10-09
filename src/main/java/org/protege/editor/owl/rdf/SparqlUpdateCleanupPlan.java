@@ -6,10 +6,15 @@ import java.util.Set;
 
 public class SparqlUpdateCleanupPlan {
 	private final Set<String> objectPropertyIRIs = new HashSet<String>();
+	private final Set<String> annotationPropertyIRIs = new HashSet<String>();
 	private final Set<String> namedIndividualIRIs = new HashSet<String>();
 	
 	public void addObjectPropertyIRI(String iri) {
 		objectPropertyIRIs.add(iri);
+	}
+	
+	public void addAnnotationPropertyIRI(String iri) {
+		annotationPropertyIRIs.add(iri);
 	}
 	
 	public void addNamedIndividualIRI(String iri) {
@@ -17,11 +22,15 @@ public class SparqlUpdateCleanupPlan {
 	}
 	
 	public boolean isEmpty() {
-		return objectPropertyIRIs.isEmpty() && namedIndividualIRIs.isEmpty();
+		return objectPropertyIRIs.isEmpty() && annotationPropertyIRIs.isEmpty() && namedIndividualIRIs.isEmpty();
 	}
 	
 	public Set<String> getObjectPropertyIRIs() {
 		return Collections.unmodifiableSet(objectPropertyIRIs);
+	}
+	
+	public Set<String> getAnnotationPropertyIRIs() {
+		return Collections.unmodifiableSet(annotationPropertyIRIs);
 	}
 	
 	public Set<String> getNamedIndividualIRIs() {
