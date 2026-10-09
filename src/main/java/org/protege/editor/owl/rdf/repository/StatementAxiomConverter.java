@@ -82,22 +82,28 @@ class StatementAxiomConverter {
 				return dataFactory.getOWLDisjointClassesAxiom(dataFactory.getOWLClass(iri(subject)), dataFactory.getOWLClass(iri(objectIRI)));
 			}
 			if (RDFS_DOMAIN.equals(predicate)) {
-				return domainAxiom(subject, objectIRI);
+				return isProperty(subject) ? domainAxiom(subject, objectIRI) : annotationAssertion(subject, predicate, objectIRI);
 			}
 			if (RDFS_RANGE.equals(predicate)) {
-				return rangeAxiom(subject, objectIRI);
+				return isProperty(subject) ? rangeAxiom(subject, objectIRI) : annotationAssertion(subject, predicate, objectIRI);
 			}
 			if (isAnnotationProperty(predicate)) {
-				return dataFactory.getOWLAnnotationAssertionAxiom(dataFactory.getOWLAnnotationProperty(iri(predicate)), iri(subject), iri(objectIRI));
+				return annotationAssertion(subject, predicate, objectIRI);
 			}
-			return dataFactory.getOWLObjectPropertyAssertionAxiom(dataFactory.getOWLObjectProperty(iri(predicate)), dataFactory.getOWLNamedIndividual(iri(subject)), dataFactory.getOWLNamedIndividual(iri(objectIRI)));
+			if (isObjectProperty(predicate)) {
+				return dataFactory.getOWLObjectPropertyAssertionAxiom(dataFactory.getOWLObjectProperty(iri(predicate)), dataFactory.getOWLNamedIndividual(iri(subject)), dataFactory.getOWLNamedIndividual(iri(objectIRI)));
+			}
+			return annotationAssertion(subject, predicate, objectIRI);
 		}
 		if (object instanceof Literal) {
 			Literal literal = (Literal) object;
 			if (isAnnotationProperty(predicate)) {
 				return dataFactory.getOWLAnnotationAssertionAxiom(dataFactory.getOWLAnnotationProperty(iri(predicate)), iri(subject), literal(literal));
 			}
-			return dataFactory.getOWLDataPropertyAssertionAxiom(dataFactory.getOWLDataProperty(iri(predicate)), dataFactory.getOWLNamedIndividual(iri(subject)), literal(literal));
+			if (isDataProperty(predicate)) {
+				return dataFactory.getOWLDataPropertyAssertionAxiom(dataFactory.getOWLDataProperty(iri(predicate)), dataFactory.getOWLNamedIndividual(iri(subject)), literal(literal));
+			}
+			return dataFactory.getOWLAnnotationAssertionAxiom(dataFactory.getOWLAnnotationProperty(iri(predicate)), iri(subject), literal(literal));
 		}
 		return null;
 	}
@@ -153,6 +159,14 @@ class StatementAxiomConverter {
 		return isDeclared(dataFactory.getOWLDataProperty(iri(iri)));
 	}
 	
+	private boolean isObjectProperty(String iri) {
+		return isDeclared(dataFactory.getOWLObjectProperty(iri(iri)));
+	}
+	
+	private boolean isProperty(String iri) {
+		return isAnnotationProperty(iri) || isDataProperty(iri) || isObjectProperty(iri);
+	}
+	
 	private boolean isClassIRI(String iri) {
 		return OWL_THING.equals(iri) || OWL_NOTHING.equals(iri) || isDeclared(dataFactory.getOWLClass(iri(iri)));
 	}
@@ -180,6 +194,10 @@ class StatementAxiomConverter {
 	
 	private IRI iri(String iri) {
 		return IRI.create(iri);
+	}
+	
+	private OWLAxiom annotationAssertion(String subject, String predicate, String object) {
+		return dataFactory.getOWLAnnotationAssertionAxiom(dataFactory.getOWLAnnotationProperty(iri(predicate)), iri(subject), iri(object));
 	}
 	
 	static class StatementConversion {

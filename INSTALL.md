@@ -21,7 +21,8 @@
 - SPARQL Update support for INSERT and DELETE against a selected target ontology.
 - Update preview confirmation and one-step undo for the last applied update.
 - Direct OWL axiom conversion for common update triples, reducing unnecessary parser-driven rewrites.
-- Turtle saves prefer the plain Rio Turtle writer after SPARQL updates, which avoids the OWLAPI comment banners and generated-by footer produced by the classic Turtle renderer.
+- Unknown predicates are preserved as RDF-style annotation assertions instead of being guessed as object or data properties.
+- Turtle saves disable missing-type generation after SPARQL updates and clean OWLAPI-generated comment banners after save.
 
 ## Notes
 

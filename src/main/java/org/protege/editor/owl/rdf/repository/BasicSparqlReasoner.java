@@ -343,8 +343,12 @@ public class BasicSparqlReasoner implements SparqlReasoner {
 	
 	private void preferPlainTurtleFormat(OWLOntology ontology) {
 		OWLDocumentFormat format = manager.getOntologyFormat(ontology);
+		if (format != null) {
+			format.setAddMissingTypes(false);
+		}
 		if (format instanceof TurtleDocumentFormat) {
 			RioTurtleDocumentFormat rioFormat = new RioTurtleDocumentFormat();
+			rioFormat.setAddMissingTypes(false);
 			if (format.isPrefixOWLOntologyFormat()) {
 				PrefixDocumentFormat prefixFormat = format.asPrefixOWLOntologyFormat();
 				rioFormat.copyPrefixesFrom(prefixFormat);

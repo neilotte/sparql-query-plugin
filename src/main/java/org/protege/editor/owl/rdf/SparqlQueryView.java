@@ -1,6 +1,8 @@
 package org.protege.editor.owl.rdf;
 
 import org.protege.editor.core.ui.error.ErrorLogPanel;
+import org.protege.editor.owl.model.io.IOListener;
+import org.protege.editor.owl.model.io.IOListenerEvent;
 import org.protege.editor.owl.rdf.repository.BasicSparqlReasonerFactory;
 import org.protege.editor.owl.ui.view.AbstractOWLViewComponent;
 
@@ -50,6 +52,7 @@ public class SparqlQueryView extends AbstractOWLViewComponent {
 	private SparqlReasoner reasoner;
 	private SavedSparqlQueryStore queryStore;
 	private SavedSparqlQueryStore recentQueryStore;
+	private final TurtleSaveCleaner turtleSaveCleaner = new TurtleSaveCleaner();
 	private final JTextPane queryPane = new JTextPane();
 	private final SwingResultModel resultModel = new SwingResultModel();
 	private final SparqlResultExporter resultExporter = new SparqlResultExporter();
@@ -70,6 +73,7 @@ public class SparqlQueryView extends AbstractOWLViewComponent {
 	private final List<SavedSparqlQuery> recentQueries = new ArrayList<SavedSparqlQuery>();
 
 	private SwingWorker<SparqlResultSet, Void> queryWorker;
+	private IOListener ioListener;
 	private Timer elapsedTimer;
 	private long queryStartedAt;
 	private SparqlResultSet currentResult = new SparqlResultSet(new ArrayList<String>());
@@ -89,6 +93,7 @@ public class SparqlQueryView extends AbstractOWLViewComponent {
 		loadTargetOntologies();
 		loadTemplates();
 		setInitialQuery();
+		registerSaveCleaner();
 		registerRunShortcut();
 		updateButtonState();
 	}
@@ -594,6 +599,33 @@ public class SparqlQueryView extends AbstractOWLViewComponent {
 		queryPane.getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, InputEvent.CTRL_DOWN_MASK), RUN_ACTION_KEY);
 		queryPane.getActionMap().put(RUN_ACTION_KEY, runAction);
 	}
+	
+	private void registerSaveCleaner() {
+		ioListener = new IOListener() {
+			@Override
+			public void beforeSave(IOListenerEvent event) {
+			}
+			
+			@Override
+			public void afterSave(IOListenerEvent event) {
+				try {
+					turtleSaveCleaner.clean(event.getPhysicalURI());
+				}
+				catch (Exception e) {
+					ErrorLogPanel.showErrorDialog(e);
+				}
+			}
+			
+			@Override
+			public void beforeLoad(IOListenerEvent event) {
+			}
+			
+			@Override
+			public void afterLoad(IOListenerEvent event) {
+			}
+		};
+		getOWLModelManager().addIOListener(ioListener);
+	}
 
 	@Override
 	protected void disposeOWLView() {
@@ -605,6 +637,10 @@ public class SparqlQueryView extends AbstractOWLViewComponent {
 		if (reasoner != null) {
 			reasoner.dispose();
 			reasoner = null;
+		}
+		if (ioListener != null) {
+			getOWLModelManager().removeIOListener(ioListener);
+			ioListener = null;
 		}
 	}
 	
