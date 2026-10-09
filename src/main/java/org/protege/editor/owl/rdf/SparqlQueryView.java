@@ -412,6 +412,7 @@ public class SparqlQueryView extends AbstractOWLViewComponent {
 					if (!isCancelled()) {
 						currentResult = get();
 						resultModel.setResults(currentResult);
+						turtleSaveCleaner.addCleanupPlan(reasoner.getLastUpdateCleanupPlan());
 						recordRecentQuery(query);
 						long elapsed = System.currentTimeMillis() - queryStartedAt;
 						statusLabel.setText("Done: " + currentResult.getRowCount() + " rows in " + elapsed + " ms");

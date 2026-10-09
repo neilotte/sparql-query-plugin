@@ -23,6 +23,7 @@
 - Direct OWL axiom conversion for common update triples, reducing unnecessary parser-driven rewrites.
 - Unknown predicates are preserved as RDF-style annotation assertions instead of being guessed as object or data properties.
 - Turtle saves disable missing-type generation after SPARQL updates and clean OWLAPI-generated comment banners after save.
+- For generic URI triples inserted through SPARQL, generated `owl:ObjectProperty` and `owl:NamedIndividual` type declarations for touched IRIs are removed from the saved Turtle file unless they were explicitly part of the update.
 
 ## Notes
 

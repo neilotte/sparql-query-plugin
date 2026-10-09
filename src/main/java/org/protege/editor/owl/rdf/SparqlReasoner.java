@@ -19,6 +19,10 @@ public interface SparqlReasoner {
 		throw new SparqlReasonerException("This SPARQL reasoner does not support undoing updates.");
 	}
 	
+	default SparqlUpdateCleanupPlan getLastUpdateCleanupPlan() {
+		return new SparqlUpdateCleanupPlan();
+	}
+	
 	SparqlResultSet executeQuery(String query) throws SparqlReasonerException;
 	
 	void dispose();

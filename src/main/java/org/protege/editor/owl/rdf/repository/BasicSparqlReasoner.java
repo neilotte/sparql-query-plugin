@@ -11,7 +11,9 @@ import java.util.List;
 import java.util.Map.Entry;
 import java.util.Set;
 
+import org.openrdf.model.URI;
 import org.openrdf.model.Statement;
+import org.openrdf.model.Value;
 import org.openrdf.query.BooleanQuery;
 import org.openrdf.query.GraphQuery;
 import org.openrdf.query.Query;
@@ -34,6 +36,7 @@ import org.openrdf.sail.memory.MemoryStore;
 import org.protege.editor.owl.rdf.SparqlReasoner;
 import org.protege.editor.owl.rdf.SparqlReasonerException;
 import org.protege.editor.owl.rdf.SparqlResultSet;
+import org.protege.editor.owl.rdf.SparqlUpdateCleanupPlan;
 import org.protege.editor.owl.rdf.SparqlUpdatePreview;
 import org.semanticweb.owlapi.apibinding.OWLManager;
 import org.semanticweb.owlapi.formats.PrefixDocumentFormat;
@@ -51,10 +54,18 @@ import org.semanticweb.owlapi.model.RemoveAxiom;
 import org.semanticweb.owlapi.util.NamespaceUtil;
 
 public class BasicSparqlReasoner implements SparqlReasoner {
+	private static final String RDF_TYPE = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
+	private static final String RDFS_SUBCLASS_OF = "http://www.w3.org/2000/01/rdf-schema#subClassOf";
+	private static final String RDFS_DOMAIN = "http://www.w3.org/2000/01/rdf-schema#domain";
+	private static final String RDFS_RANGE = "http://www.w3.org/2000/01/rdf-schema#range";
+	private static final String OWL_EQUIVALENT_CLASS = "http://www.w3.org/2002/07/owl#equivalentClass";
+	private static final String OWL_DISJOINT_WITH = "http://www.w3.org/2002/07/owl#disjointWith";
+	
 	private OWLOntologyManager manager;
 	private Repository repository;
 	private OWLOntology targetOntology;
 	private final Deque<List<OWLOntologyChange>> undoStack = new LinkedList<List<OWLOntologyChange>>();
+	private SparqlUpdateCleanupPlan lastUpdateCleanupPlan = new SparqlUpdateCleanupPlan();
 	
 	public BasicSparqlReasoner(OWLOntologyManager manager) {
 		this.manager = manager;
@@ -132,6 +143,11 @@ public class BasicSparqlReasoner implements SparqlReasoner {
 	}
 	
 	@Override
+	public SparqlUpdateCleanupPlan getLastUpdateCleanupPlan() {
+		return lastUpdateCleanupPlan;
+	}
+	
+	@Override
 	public void precalculate() throws SparqlReasonerException {
 		if (repository == null) {
 			try {
@@ -206,9 +222,35 @@ public class BasicSparqlReasoner implements SparqlReasoner {
 		addedStatements.removeAll(before);
 		Set<Statement> removedStatements = new HashSet<Statement>(before);
 		removedStatements.removeAll(after);
+		lastUpdateCleanupPlan = createCleanupPlan(addedStatements);
 		AxiomDiff axiomDiff = createAxiomDiff(addedStatements, removedStatements);
 		AppliedUpdate appliedUpdate = applyAxiomDiff(axiomDiff, addedStatements.size(), removedStatements.size());
 		return appliedUpdate;
+	}
+	
+	private SparqlUpdateCleanupPlan createCleanupPlan(Set<Statement> addedStatements) {
+		SparqlUpdateCleanupPlan cleanupPlan = new SparqlUpdateCleanupPlan();
+		for (Statement statement : addedStatements) {
+			if (isGenericUriTriple(statement)) {
+				cleanupPlan.addNamedIndividualIRI(statement.getSubject().stringValue());
+				cleanupPlan.addObjectPropertyIRI(statement.getPredicate().stringValue());
+				cleanupPlan.addNamedIndividualIRI(statement.getObject().stringValue());
+			}
+		}
+		return cleanupPlan;
+	}
+	
+	private boolean isGenericUriTriple(Statement statement) {
+		Value object = statement.getObject();
+		String predicate = statement.getPredicate().stringValue();
+		return statement.getSubject() instanceof URI
+				&& object instanceof URI
+				&& !RDF_TYPE.equals(predicate)
+				&& !RDFS_SUBCLASS_OF.equals(predicate)
+				&& !RDFS_DOMAIN.equals(predicate)
+				&& !RDFS_RANGE.equals(predicate)
+				&& !OWL_EQUIVALENT_CLASS.equals(predicate)
+				&& !OWL_DISJOINT_WITH.equals(predicate);
 	}
 	
 	private SparqlUpdatePreview createUpdatePreview(Set<Statement> before, Set<Statement> after) throws Exception {
